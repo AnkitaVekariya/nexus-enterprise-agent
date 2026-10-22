@@ -302,7 +302,7 @@ The runner fills empty tool responses, clears `pending_interactions`, saves (if 
 
 ### The user sends a new message instead
 
-If `run()` or `run_stream()` gets a new user message while the session is still paused, the user has moved on (for example, they typed something instead of clicking one of the offered options). The runner gives every pending tool call the result `"Not run: the user sent a new message instead."` (`PENDING_SUPERSEDED` in `nexus.runner.agent_runner`), clears `pending_interactions`, and then runs the new message. The model sees that those calls never ran, and the next `paused` event lists only the new calls. Without this, every later pause listed the old calls again, so the client asked the same question and repeated old actions on every message.
+If `run()` or `run_stream()` gets a new user message while the session is still paused, the user has moved on (for example, they typed something instead of clicking one of the offered options). The runner gives every pending tool call the result `"Not answered by user: the user sent a new message instead."` (`PENDING_SUPERSEDED` in `nexus.runner.agent_runner`), clears `pending_interactions`, and then runs the new message. The model sees that those calls never ran, and the next `paused` event lists only the new calls. Without this, every later pause listed the old calls again, so the client asked the same question and repeated old actions on every message.
 
 `resume()` is not affected: it continues with an empty message.
 

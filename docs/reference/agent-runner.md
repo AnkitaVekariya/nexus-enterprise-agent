@@ -121,7 +121,7 @@ result = await runner.resume(
 
 Raises if the session is missing or has no pending interactions. Full flow: [runtime-control.md](../guides/runtime-control.md#pause-and-resume-client-tools).
 
-If a paused session gets a new user message through `run()` / `run_stream()` instead of `resume()`, the runner closes the pending calls with `PENDING_SUPERSEDED` ("Not run: the user sent a new message instead.") and clears `pending_interactions` before running the message.
+If a paused session gets a new user message through `run()` / `run_stream()` instead of `resume()`, the runner closes the pending calls with `PENDING_SUPERSEDED` ("Not answered by user: the user sent a new message instead.") and clears `pending_interactions` before running the message.
 
 ## Runtime tool granting
 

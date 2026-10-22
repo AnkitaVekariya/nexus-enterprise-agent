@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 
 # Result given to a client tool / elicitation the user moved on from (see
 # AgentRunner._close_pending_interactions).
-PENDING_SUPERSEDED = "Not run: the user sent a new message instead."
+PENDING_SUPERSEDED = "Not answered by user: the user sent a new message instead."
 
 
 class RunCancelled(Exception):
