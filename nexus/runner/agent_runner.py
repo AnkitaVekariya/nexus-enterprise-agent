@@ -65,6 +65,10 @@ from nexus.tools.toolsets import filter_schemas_by_tools
 
 logger = logging.getLogger(__name__)
 
+# Result given to a client tool / elicitation the user moved on from (see
+# AgentRunner._close_pending_interactions).
+PENDING_SUPERSEDED = "Not answered by user: the user sent a new message instead."
+
 
 class RunCancelled(Exception):
     """Raised when ``AgentRunner.cancel()`` stops a cooperative run."""
@@ -424,6 +428,21 @@ class AgentRunner:
             limit,
         )
         return tool_calls[:limit]
+
+    def _close_pending_interactions(self, session: AgentSession) -> None:
+        """A new user message ends whatever the paused run was waiting for.
+
+        Each pending tool call gets a "not run" result (so the model sees it
+        never happened) and the list is cleared. Left open, the next pause would
+        list them again next to the new ones: the client asks the same question
+        and repeats old actions on every message.
+        """
+        open_ids = {p.tc_id for p in session.pending_interactions}
+        for turn in session.turns:
+            for tc in turn.tool_calls:
+                if tc.tc_id in open_ids and not tc.raw_response:
+                    tc.raw_response = PENDING_SUPERSEDED
+        session.pending_interactions = []
 
     def _maybe_pause_for_human_in_loop(
         self, session: AgentSession, run_turn_index: int
@@ -996,6 +1015,8 @@ class AgentRunner:
         # append_turn reload so the flag (read by the token_usage aggregate)
         # survives in the stored chat JSON.
         session.rcs_enabled = bool(getattr(self.config.rcs, "enabled", False))
+        if user_message and session.pending_interactions:
+            self._close_pending_interactions(session)
         await self._maybe_save_session(session)
         self._user_memory = await self._load_user_memory()
         self._setup_skills()
