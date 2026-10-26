@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, patch
 from nexus.config.agent import AgentConfig, TurnConfig
 from nexus.config.llm import LLMProviderConfig
 from nexus.llm.response import LLMResponse, LLMStreamChunk, TokenUsage, ToolCallRequest
-from nexus.runner.agent_runner import AgentRunner
+from nexus.runner.agent_runner import PENDING_SUPERSEDED, AgentRunner
 from nexus.session.manager import SessionManager
 from nexus.tools.decorators import tool
 from nexus.tools.registry import ToolRegistry
@@ -154,6 +154,48 @@ async def test_resume_feeds_the_client_result_back_to_the_model(runner_and_manag
     sent_messages = second.await_args.kwargs.get("messages") or second.await_args.args[0]
     rendered = str(sent_messages)
     assert "form filled by user" in rendered, "client result must reach the model"
+    assert PENDING_SUPERSEDED not in rendered
+
+
+@pytest.mark.asyncio
+async def test_new_user_message_closes_unanswered_client_tool(runner_and_manager):
+    """Typing a new message must retire the paused call instead of asking it again."""
+    runner, manager = runner_and_manager
+    first = AsyncMock(side_effect=[_reply("", [_call("fill_form", field="name")])])
+
+    with patch.object(runner.llm_proxy, "chat", first):
+        paused = await runner.run(user_message="fill it", session_id="client-supersede")
+
+    old_tc = paused.pending_interactions[0]["tc_id"]
+    second = AsyncMock(
+        side_effect=[_reply("", [_call("request_user_input", question="Anything else?")])]
+    )
+
+    with patch.object(runner.llm_proxy, "chat", second):
+        followed = await runner.run(
+            user_message="never mind, skip the form", session_id="client-supersede"
+        )
+
+    assert followed.status == "paused"
+    assert len(followed.pending_interactions) == 1
+    assert followed.pending_interactions[0]["tool_name"] == "request_user_input"
+    assert followed.pending_interactions[0]["tc_id"] != old_tc
+
+    sent_messages = second.await_args.kwargs.get("messages") or second.await_args.args[0]
+    rendered = str(sent_messages)
+    assert PENDING_SUPERSEDED in rendered
+    assert "never mind, skip the form" in rendered
+
+    stored = await manager.load_session("client-supersede")
+    assert stored is not None
+    assert stored.pending_interactions[0].tool_name == "request_user_input"
+    closed = [
+        tc
+        for turn in stored.turns
+        for tc in turn.tool_calls
+        if tc.tc_id == old_tc
+    ]
+    assert closed and closed[0].raw_response == PENDING_SUPERSEDED
 
 
 @pytest.mark.asyncio
