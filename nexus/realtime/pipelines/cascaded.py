@@ -19,7 +19,7 @@ from typing import Any, AsyncIterator, Optional
 from nexus.realtime.adapters.factory import build_lid, build_stt, build_tts, build_vad
 from nexus.realtime.adapters.lid.base import LIDAdapter
 from nexus.realtime.adapters.stt.base import STTAdapter
-from nexus.realtime.adapters.tts.base import TTSAdapter
+from nexus.realtime.adapters.tts.base import TTSAdapter, first_boundary
 from nexus.realtime.adapters.vad.base import VADAdapter, VADEvent
 from nexus.realtime.config import RealtimeAgentConfig
 from nexus.realtime.events import RealtimeStreamEvent
@@ -35,16 +35,8 @@ from nexus.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
-_SENTENCE_BOUNDARIES = (".", "!", "?", "\n", ";", "।")
-
 _THINK_TAG = "<think>"
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
-
-
-def _first_boundary(text: str) -> int:
-    """Index of the earliest sentence boundary in text, or -1."""
-    found = [text.find(b) for b in _SENTENCE_BOUNDARIES if b in text]
-    return min(found) if found else -1
 
 
 def _strip_think(text: str) -> str:
@@ -348,7 +340,7 @@ class CascadedVoicePipeline:
                 if do_speak:
                     sentence_buffer += delta
                     while True:
-                        idx = _first_boundary(sentence_buffer)
+                        idx = first_boundary(sentence_buffer)
                         if idx < 0:
                             break
                         sentence = sentence_buffer[: idx + 1].strip()

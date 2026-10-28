@@ -65,7 +65,8 @@ The SaaS example exposes this at `POST /v1/chat/vision` (multipart upload).
 
 `CascadedVoicePipeline` is modular: each stage is swappable. The agent's streamed
 text reply is synthesized sentence-by-sentence, so audio starts before the full
-reply is ready.
+reply is ready. A sentence ends at `. ! ? ; ।` followed by a space, or at a new line,
+so numbers like `3.5` are never split.
 
 ### gRPC media servers (canonical)
 

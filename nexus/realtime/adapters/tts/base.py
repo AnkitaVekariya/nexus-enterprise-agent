@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 import abc
+import re
 from typing import AsyncIterator
 
 from nexus.realtime.config import TTSConfig
+
+# A boundary only counts when whitespace follows it, so "3.5" or "v0.4" is never split.
+_SENTENCE_END_RE = re.compile(r"[.!?;।](?=\s)|\n")
+
+
+def first_boundary(text: str) -> int:
+    """Index of the earliest sentence boundary in text, or -1."""
+    m = _SENTENCE_END_RE.search(text)
+    return m.start() if m else -1
 
 
 class TTSAdapter(abc.ABC):
@@ -44,19 +54,12 @@ class TTSAdapter(abc.ABC):
     ) -> AsyncIterator[bytes]:
         """Synthesize streamed text, flushing audio per sentence boundary."""
         buffer = ""
-        boundaries = (".", "!", "?", "\n")
         async for delta in text_stream:
             if not delta:
                 continue
             buffer += delta
             # Flush complete sentences for low-latency playback.
-            while any(b in buffer for b in boundaries):
-                idx = min(
-                    (buffer.find(b) for b in boundaries if b in buffer),
-                    default=-1,
-                )
-                if idx < 0:
-                    break
+            while (idx := first_boundary(buffer)) >= 0:
                 sentence = buffer[: idx + 1].strip()
                 buffer = buffer[idx + 1 :]
                 if sentence:
