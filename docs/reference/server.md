@@ -204,7 +204,7 @@ When `lid` is enabled, STT receives the **detected** language each turn (see LID
 
 | Name | Required? | Default | What it does |
 |------|-----------|---------|--------------|
-| `voice` | No | — | Voice id or Parler style description string |
+| `voice` | No | — | Voice id or Parler style description string. Used for every reply language; when unset, a built-in description per language is used |
 | `sample_rate` | No | `24000` | Playback rate sent to browser; must match server native rate |
 | `audio_format` | No | `pcm16` | Output encoding |
 | `speed` | No | `1.0` | Speaking rate (`>1` faster, `<1` slower). Native on OpenAI TTS; Parler/mock time-stretch PCM |
@@ -223,7 +223,8 @@ tts:
   #   description: Divya speaks quickly and clearly.   # Parler style override
 ```
 
-With LID enabled, language and voice description update per turn from the detected/reply language.
+With LID enabled, the language updates per turn from the detected/reply language. The voice description
+updates with it only when `voice` is unset.
 `speed` and `params` travel over gRPC on every synthesize call.
 
 ### `vad` — voice activity detection
