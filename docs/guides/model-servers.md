@@ -76,7 +76,7 @@ Details: [server.md — Two YAML files](../reference/server.md#two-yaml-files-in
 | `host` | No | `127.0.0.1` | Bind / connect address |
 | `port` | Yes | — | gRPC port |
 | `device` | No | — | `cpu`, `cuda`, `cuda:0`, … |
-| `replicas` | No | `1` | TTS concurrent synthesis pools |
+| `replicas` | No | `1` | TTS concurrent synthesis pools; each replica runs on its own worker thread, so two replicas really synthesize in parallel |
 | `sample_rate` | No | — | Native Hz (TTS — match agent `tts.sample_rate`) |
 | `extra` | No | `{}` | Engine options (`model_id`, `decoding`, `model_size`, …) |
 

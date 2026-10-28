@@ -7,7 +7,7 @@ import logging
 from nexus.server.engines.base import STTEngine
 from nexus.server.pool import EnginePool
 from nexus.server.proto import media_pb2, media_pb2_grpc
-from nexus.server.services.base import HealthServicer, pcm16_to_float32
+from nexus.server.services.base import HealthServicer, pcm16_to_float32, run_engine
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,9 @@ class SttServicer(media_pb2_grpc.SttServiceServicer):
     async def Transcribe(self, request, context):  # noqa: N802
         audio = pcm16_to_float32(request.pcm)
         lang = request.language or "hi"
-        text = self.engine.transcribe(audio, request.sample_rate or 16000, lang)
+        text = await run_engine(
+            self.engine, self.engine.transcribe, audio, request.sample_rate or 16000, lang
+        )
         return media_pb2.TranscriptEvent(
             text=text, is_final=True, confidence=1.0, language=lang
         )
@@ -40,7 +42,9 @@ class SttServicer(media_pb2_grpc.SttServiceServicer):
                 break
         audio = pcm16_to_float32(b"".join(chunks))
         if len(audio):
-            text = self.engine.transcribe(audio, sample_rate, language)
+            text = await run_engine(
+                self.engine, self.engine.transcribe, audio, sample_rate, language
+            )
             if text:
                 yield media_pb2.TranscriptEvent(
                     text=text, is_final=True, confidence=1.0, language=language

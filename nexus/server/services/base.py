@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import threading
 from concurrent import futures
 from typing import Any
 
@@ -50,6 +52,69 @@ def float32_to_pcm16(audio) -> bytes:
 
     clipped = np.clip(audio, -1.0, 1.0)
     return (clipped * 32767.0).astype(np.int16).tobytes()
+
+
+# Every server in `nexus.server up` shares ONE event loop. Engine calls are
+# blocking (seconds of GPU work), so calling them inline in an async handler
+# froze STT, LID and every other TTS stream until it returned. These two helpers
+# run them on worker threads instead. Engines are serialized per instance unless
+# they set `thread_safe = True` (e.g. maya, which batches concurrent calls itself).
+_END = object()
+
+
+def _call_lock(engine) -> contextlib.AbstractContextManager:
+    if getattr(engine, "thread_safe", False):
+        return contextlib.nullcontext()
+    return engine.__dict__.setdefault("_nexus_call_lock", threading.Lock())
+
+
+async def run_engine(engine, fn, *args, **kwargs):
+    """Run one blocking engine call off the event loop."""
+
+    def call():
+        with _call_lock(engine):
+            return fn(*args, **kwargs)
+
+    return await asyncio.to_thread(call)
+
+
+async def stream_engine(engine, gen_fn, *args, **kwargs):
+    """Drive a blocking engine generator on a worker thread, yielding as it goes.
+
+    The generator gets ``should_stop``; it flips when the consumer goes away
+    (client cancelled on barge-in), so the GPU stops instead of finishing a reply
+    nobody will hear.
+    """
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue = asyncio.Queue()
+    stop = threading.Event()
+
+    def push(item) -> None:
+        try:
+            loop.call_soon_threadsafe(q.put_nowait, item)
+        except RuntimeError:  # loop already closed (server shutting down)
+            stop.set()
+
+    def work() -> None:
+        try:
+            with _call_lock(engine):
+                for item in gen_fn(*args, should_stop=stop.is_set, **kwargs):
+                    if stop.is_set():
+                        break
+                    push(item)
+        except BaseException as exc:  # re-raised on the loop side
+            push(exc)
+        finally:
+            push(_END)
+
+    loop.run_in_executor(None, work)
+    try:
+        while (item := await q.get()) is not _END:
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+    finally:
+        stop.set()
 
 
 async def serve_grpc(

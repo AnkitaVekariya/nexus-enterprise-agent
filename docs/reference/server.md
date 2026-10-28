@@ -455,6 +455,15 @@ Defined in `nexus/server/proto/media.proto`:
 
 `AudioFrame.language` is sent on STT requests so the server transcribes in the detected language.
 
+### How requests run
+
+All servers started by `nexus.server up` share one event loop (the single thread that handles
+every request). STT, TTS and LID model calls run on worker threads, so a long TTS call never
+holds up an STT or LID request. Each engine instance runs one call at a time, because most torch
+models are not safe to call from two threads at once. An engine class that handles concurrent
+calls itself can set `thread_safe = True` to skip that lock. When a client cancels a
+`StreamSynthesize` call (for example on barge-in), the engine stops at its next chunk.
+
 ---
 
 ## Tenant context on every call
