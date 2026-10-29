@@ -7,7 +7,7 @@ import logging
 from nexus.server.engines.base import LIDEngine
 from nexus.server.pool import EnginePool
 from nexus.server.proto import media_pb2, media_pb2_grpc
-from nexus.server.services.base import HealthServicer, pcm16_to_float32
+from nexus.server.services.base import HealthServicer, pcm16_to_float32, run_engine
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +19,12 @@ class LidServicer(media_pb2_grpc.LidServiceServicer):
 
     async def DetectLanguage(self, request, context):  # noqa: N802
         audio = pcm16_to_float32(request.pcm)
-        lang, conf, en_text = self.engine.detect(
-            audio, request.sample_rate or 16000, request.fallback_language or "hi"
+        lang, conf, en_text = await run_engine(
+            self.engine,
+            self.engine.detect,
+            audio,
+            request.sample_rate or 16000,
+            request.fallback_language or "hi",
         )
         return media_pb2.LidResponse(
             language=lang, confidence=conf, english_text=en_text or ""

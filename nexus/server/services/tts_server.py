@@ -6,7 +6,12 @@ import logging
 
 from nexus.server.pool import TTSReplicaPool
 from nexus.server.proto import media_pb2, media_pb2_grpc
-from nexus.server.services.base import HealthServicer, float32_to_pcm16
+from nexus.server.services.base import (
+    HealthServicer,
+    float32_to_pcm16,
+    run_engine,
+    stream_engine,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +33,9 @@ class TtsServicer(media_pb2_grpc.TtsServiceServicer):
 
     async def Synthesize(self, request, context):  # noqa: N802
         eng = self.pool.acquire()
-        audio = eng.synthesize(
+        audio = await run_engine(
+            eng,
+            eng.synthesize,
             request.text,
             request.language or "hi",
             request.voice or None,
@@ -65,8 +72,8 @@ class TtsServicer(media_pb2_grpc.TtsServiceServicer):
         if not text:
             return
         eng = self.pool.acquire()
-        for chunk in eng.synthesize_stream(
-            text, language, voice, speed=speed, params=params
+        async for chunk in stream_engine(
+            eng, eng.synthesize_stream, text, language, voice, speed=speed, params=params
         ):
             yield media_pb2.AudioChunk(
                 pcm=float32_to_pcm16(chunk),
