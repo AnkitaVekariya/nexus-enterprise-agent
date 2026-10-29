@@ -93,18 +93,16 @@ class GrpcTTS(TTSAdapter):
         **kwargs: Any,
     ) -> AsyncIterator[bytes]:
         stub = await self._stub()
-        buffer = ""
 
         async def _request_iter():
-            nonlocal buffer
             async for delta in text_stream:
                 if delta:
-                    buffer += delta
                     yield self._request(
                         delta, language=language, voice=voice, speed=speed, params=kwargs
                     )
+            # The server already joined the deltas; is_final only marks the end.
             yield self._request(
-                buffer,
+                "",
                 language=language,
                 voice=voice,
                 speed=speed,
