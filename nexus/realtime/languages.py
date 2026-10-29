@@ -73,8 +73,8 @@ def resolve(code: str | None) -> Language:
 
 
 def tts_voice_for(code: str | None, default_voice: str | None = None) -> str:
-    """Parler-style voice description for the given language code."""
-    if default_voice and not code:
+    """Configured voice if set, else the built-in voice description for the language."""
+    if default_voice:
         return default_voice
     return resolve(code).tts_description
 
