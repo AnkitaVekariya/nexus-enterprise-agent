@@ -12,6 +12,7 @@ playback starts before the full reply is ready.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any, AsyncIterator, Optional
@@ -309,11 +310,7 @@ class CascadedVoicePipeline:
         tts_voice = None
         if self.lid is not None and tts_lang:
             tts_voice = tts_voice_for(tts_lang, self.config.effective_tts().voice)
-        sentence_buffer = ""
         final_text: Optional[str] = None
-        spoke_audio = False
-        raw_content = ""
-        visible_emitted = 0
 
         async def _synthesize(sentence: str) -> bytes:
             kwargs: dict[str, Any] = {}
@@ -323,63 +320,109 @@ class CascadedVoicePipeline:
                 kwargs["voice"] = tts_voice
             return await self.tts.synthesize(sentence, **kwargs)
 
-        async for ev in self.runner.run_stream(text, session_id=session_id, stream=True):
-            if ev.event_type == "content" and ev.content:
-                # Filter reasoning traces (<think>…</think>) before they are spoken
-                # or streamed. Recompute from the full raw stream so tags split
-                # across deltas are handled correctly.
-                raw_content += ev.content
-                visible_total = _visible_think_len(raw_content)
-                if visible_total <= visible_emitted:
-                    continue
-                delta = _strip_think(raw_content)[visible_emitted:visible_total]
-                visible_emitted = visible_total
-                if not delta:
-                    continue
-                yield RealtimeStreamEvent.text_delta(delta)
-                if do_speak:
-                    sentence_buffer += delta
-                    while True:
-                        idx = first_boundary(sentence_buffer)
-                        if idx < 0:
-                            break
-                        sentence = sentence_buffer[: idx + 1].strip()
-                        sentence_buffer = sentence_buffer[idx + 1 :]
-                        if sentence:
-                            audio = await _synthesize(sentence)
-                            spoke_audio = True
-                            yield RealtimeStreamEvent.audio_chunk(
-                                audio, text=sentence, language=tts_lang, voice=tts_voice
-                            )
-            elif ev.event_type == "tool_call":
-                yield RealtimeStreamEvent(event_type="tool_call", data=ev.data)
-            elif ev.event_type == "tool_result":
-                yield RealtimeStreamEvent(event_type="tool_result", content=ev.content, data=ev.data)
-            elif ev.event_type == "error":
-                yield RealtimeStreamEvent(event_type="error", content=ev.content, data=ev.data)
-            elif ev.event_type == "final_response":
-                final_text = _strip_think(ev.content or "").strip() or None
+        # Two tasks feed `out` in send order: _read_llm puts text/tool events and queues
+        # sentences; _tts_worker synthesizes queued sentences one at a time and puts
+        # their audio. So the LLM is never paused by TTS, audio is sent as soon as it
+        # is ready (even while a tool runs), and a sentence's text comes before its audio.
+        out: asyncio.Queue = asyncio.Queue()
+        sentences: asyncio.Queue = asyncio.Queue()
+        done = object()
 
-        # Flush any trailing partial sentence.
-        if do_speak and sentence_buffer.strip():
-            audio = await _synthesize(sentence_buffer.strip())
-            spoke_audio = True
-            yield RealtimeStreamEvent.audio_chunk(
-                audio,
-                text=sentence_buffer.strip(),
-                language=tts_lang,
-                voice=tts_voice,
-            )
+        async def _read_llm() -> None:
+            nonlocal final_text
+            sentence_buffer = ""
+            spoke_audio = False
+            raw_content = ""
+            visible_emitted = 0
+            async for ev in self.runner.run_stream(text, session_id=session_id, stream=True):
+                if ev.event_type == "content" and ev.content:
+                    # Filter reasoning traces (<think>…</think>) before they are spoken
+                    # or streamed. Recompute from the full raw stream so tags split
+                    # across deltas are handled correctly.
+                    raw_content += ev.content
+                    visible_total = _visible_think_len(raw_content)
+                    if visible_total <= visible_emitted:
+                        continue
+                    delta = _strip_think(raw_content)[visible_emitted:visible_total]
+                    visible_emitted = visible_total
+                    if not delta:
+                        continue
+                    out.put_nowait(RealtimeStreamEvent.text_delta(delta))
+                    if do_speak:
+                        sentence_buffer += delta
+                        while True:
+                            idx = first_boundary(sentence_buffer)
+                            if idx < 0:
+                                break
+                            sentence = sentence_buffer[: idx + 1].strip()
+                            sentence_buffer = sentence_buffer[idx + 1 :]
+                            if sentence:
+                                sentences.put_nowait(sentence)
+                                spoke_audio = True
+                elif ev.event_type == "tool_call":
+                    # Text before a tool call is complete even without a trailing
+                    # space; speak it now instead of after the tool returns.
+                    if do_speak and sentence_buffer.strip():
+                        sentences.put_nowait(sentence_buffer.strip())
+                        sentence_buffer = ""
+                        spoke_audio = True
+                    out.put_nowait(RealtimeStreamEvent(event_type="tool_call", data=ev.data))
+                elif ev.event_type == "tool_result":
+                    out.put_nowait(
+                        RealtimeStreamEvent(event_type="tool_result", content=ev.content, data=ev.data)
+                    )
+                elif ev.event_type == "error":
+                    out.put_nowait(
+                        RealtimeStreamEvent(event_type="error", content=ev.content, data=ev.data)
+                    )
+                elif ev.event_type == "final_response":
+                    final_text = _strip_think(ev.content or "").strip() or None
 
-        # Some LLM streams only surface text on final_response; still speak it.
-        if do_speak and not spoke_audio and final_text and final_text.strip():
-            audio = await _synthesize(final_text.strip())
-            yield RealtimeStreamEvent.audio_chunk(
-                audio,
-                text=final_text.strip(),
-                language=tts_lang,
-                voice=tts_voice,
-            )
+            # Flush any trailing partial sentence.
+            if do_speak and sentence_buffer.strip():
+                sentences.put_nowait(sentence_buffer.strip())
+                spoke_audio = True
+
+            # Some LLM streams only surface text on final_response; still speak it.
+            if do_speak and not spoke_audio and final_text and final_text.strip():
+                sentences.put_nowait(final_text.strip())
+            sentences.put_nowait(None)
+
+        async def _tts_worker() -> None:
+            while (sentence := await sentences.get()) is not None:
+                audio = await _synthesize(sentence)
+                out.put_nowait(
+                    RealtimeStreamEvent.audio_chunk(
+                        audio, text=sentence, language=tts_lang, voice=tts_voice
+                    )
+                )
+
+        async def _run(producer) -> None:
+            try:
+                await producer()
+            except Exception as exc:  # noqa: BLE001 - re-raised below, in this generator
+                out.put_nowait(exc)
+            finally:
+                out.put_nowait(done)
+
+        tasks = [asyncio.create_task(_run(_read_llm))]
+        if do_speak:
+            tasks.append(asyncio.create_task(_run(_tts_worker)))
+        try:
+            running = len(tasks)
+            while running:
+                item = await out.get()
+                if item is done:
+                    running -= 1
+                elif isinstance(item, Exception):
+                    raise item
+                else:
+                    yield item
+        finally:
+            # Barge-in closes this stream: stop the LLM read and any in-flight TTS call.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         terminal = bool(self.run_context.metadata.get("ivr_terminal"))
         yield RealtimeStreamEvent(
